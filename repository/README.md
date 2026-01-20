@@ -90,7 +90,7 @@ testing-rl/
 
 ## Installation
 
-### 1. Clone and create a virtual environment
+### 1. Clone and create a virtual environment (pip/venv)
 ```bash
 git clone https://github.com/<your-repo>/testing-rl.git
 cd testing-rl
@@ -101,11 +101,34 @@ source .venv/bin/activate    # (Mac/Linux)
 .venv\\Scripts\\activate       # (Windows)
 ```
 
-### 2. Install dependencies
+### 2. Install dependencies (pip)
 ```bash
 pip install -r requirements.txt
 ```
+### Optional: Using uv (alternative to pip)
 
+If you prefer using `uv`, a fast Python packaging tool, you can manage the environment from `pyproject.toml`:
+
+1) Install uv (one-time):
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Restart your shell or ensure uv is on PATH
+```
+
+2) Create the environment and install deps:
+```bash
+uv sync
+```
+
+3) Run using the synced environment:
+```bash
+uv run python main.py
+```
+
+Common uv commands:
+- Add a new dependency: `uv add <package>`
+- Update dependencies and lock: `uv sync --frozen` (uses `uv.lock` if present)
+- Run ad-hoc commands: `uv run <command>`
 The key dependencies include:
 - `gymnasium>=0.29.0`
 - `highway-env>=1.8.2`
@@ -133,7 +156,9 @@ The file `pretrained_policy.py` handles loading the pre-trained PPO agent
 Run the random search baseline from **main.py**:
 
 ```bash
-python main.py
+python main.py          # standard pip/venv
+# or, if using uv
+uv run python main.py
 ```
 
 This will:
