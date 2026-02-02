@@ -31,6 +31,8 @@ import numpy as np
 
 from envs.highway_env_utils import run_episode, record_video_episode
 
+import math
+
 
 # ============================================================
 # 1) OBJECTIVES FROM TIME SERIES
@@ -59,33 +61,40 @@ def compute_objectives_from_time_series(time_series: List[Dict[str, Any]]) -> Di
     but keep the keys above at least.
     """
     # TODO (students)
-    result = {}
-    result = {
-        "crash_count" : 0,
-        "min_distance" : float('inf')
-    }
-    for t in time_series:
-        if t['crashed']:
-            result["crash_count"] = 1
-            break
-        # ego
-        ego_x, ego_y = t["ego"]["pos"]
-        e_speed, e_heading = t["ego"]["speed"], t["ego"]["heading"]
-        e_length, e_width = t["ego"]["length"], t["ego"]["width"]
-        o_lane_id = t["ego"]["lane_id"]
+    crash = 0
+    min_distance = float('inf')
+    min_same_lane_distance = float('inf')
 
-        # metrics to record
-        min_distance = result["min_distance"]
+    for frame in time_series:
+        if frame.get('crashed', False):
+            crash = 1
+        # ego
+        ego = frame.get("ego", None)
+        if ego is None: continue
+        e_x, e_y = ego["pos"]
+        # e_speed, e_heading = ego["speed"], ego["heading"]
+        # e_length, e_width = ego["length"], ego["width"]
+        e_lane = ego["lane_id"]
+
         # other
-        for other in t["others"]:
+        for other in frame.get("others", []):
             o_x, o_y = other["pos"]
-            o_length, o_width = other["length"], other["width"]
-            o_lane_id = other["lane_id"]
-            # compare ego with other vehicle (NAIVE: x for now)
-            # abs distance
-            diff = abs(o_x - ego_x)
-            result["min_distance"] = min(result["min_distance"], diff)
-    
+            # o_length, o_width = other["length"], other["width"]
+            o_lane = other["lane_id"]
+            # compare ego with other vehicle
+            # euclidean distance
+            diff = ((o_x - e_x)**2 + (o_y - e_y) ** 2) ** 0.5
+            min_distance = min(min_distance, diff)
+            # compute same-lane difference if it exists
+            if e_lane == o_lane:
+                same_lane_diff = abs(o_x - e_x)
+                min_same_lane_distance = min(min_same_lane_distance, same_lane_diff)
+
+    result = {
+        "crash_count" : crash,
+        "min_distance" : min_distance,
+        "min_same_lane_distance" : min_same_lane_distance
+    }
     return result
 
 
@@ -104,9 +113,15 @@ def compute_fitness(objectives: Dict[str, Any]) -> float:
     """
     fitness = 0
     if objectives["crash_count"] == 1:
-        fitness = -1
+        return -1
+    same_lane_dist = objectives["min_same_lane_distance"]
+    if np.isfinite(same_lane_dist):
+        # if min_same_lane_distance exists, then we prefer that over euclidean distance
+        fitness = same_lane_dist
+        # print("absolute lane distance", fitness)
     else:
         fitness = objectives["min_distance"]
+        # print("euclidean distance", fitness)
     return fitness
 
 
@@ -147,18 +162,46 @@ def mutate_config(
     """
     # print("MUTATED_CONFIG: PARAM_SPEC", param_spec)
     mutated_config = cfg.copy()
-    # print(mutated_config.keys())
-    # naive single-parameter mutation based on randomization
-    selections = ['vehicles_count', 'lanes_count', 'initial_spacing', 'ego_spacing', 'initial_lane_id']
+    selections = ['vehicles_count','initial_spacing', 'ego_spacing', 'lanes_count', 'initial_lane_id']
     select = rng.choice(selections)
     m_type = param_spec[select]["type"]
     m_min, m_max = param_spec[select]["min"], param_spec[select]["max"]
-    if m_type == "int":
-        mutated_config[select] = rng.integers(m_min, m_max + 1)
-    elif m_type == 'float':
-        mutated_config[select] = rng.uniform(m_min, m_max)
 
-    return mutated_config       
+    # SPECIAL CASE FOR INITIAL_LANE_ID as it's dependent on lanes_count
+    if select == "initial_lane_id":
+        # local move between -1 or 1
+        delta = int(rng.choice([-1, 1]))
+        mutated_config["initial_lane_id"] = int(
+            np.clip(mutated_config["initial_lane_id"] + delta, 0, mutated_config["lanes_count"] - 1)
+        )
+        return mutated_config
+    
+    if m_type == "int": # mutate vehicles_count and lanes_count
+        step_size = 1
+        if select == 'vehicles_count':
+            # step vehicle_counts by 1-5 steps
+            step_size = int(rng.choice([1, 2, 3, 4, 5]))
+        # step negatively or positively
+        step_direction = rng.choice([-1, 1])
+        delta = step_size * step_direction
+        mutated_config[select] = int(np.clip(mutated_config[select] + delta, m_min, m_max))
+    else:
+        # else, we mutate initial_spacing and ego_spacing
+        step_range = m_max - m_min
+        step_size = float(rng.choice([0.1, 0.15, 0.2, 0.25]))
+        sigma = step_size * step_range
+        mutated_config[select] = float(np.clip(mutated_config[select] + rng.normal(0, sigma), m_min, m_max))
+    
+    if select == "lanes_count":
+        # everytime we modify lanes_count, we should update initial_lane_id as well
+        if "initial_lane_id" not in mutated_config:
+            # ensure initial_lane_id is inside mutated_config
+            mutated_config["initial_lane_id"] = int(rng.integers(0, mutated_config["lanes_count"]))
+        # clip lane id to [0, lanes_count-1] as per spec
+        mutated_config["initial_lane_id"] = int(
+            np.clip(mutated_config["initial_lane_id"], 0, mutated_config["lanes_count"] - 1)
+        )
+    return mutated_config
 
 
 # ============================================================
@@ -208,10 +251,19 @@ def hill_climb(
 
     # TODO (students): choose initialization (base_cfg or random scenario)
     current_cfg = dict(base_cfg)
-    print("INITIAL CFG:", current_cfg)
+    # INITIALIZE RANDOM SCENARIO
+    for k, v in param_spec.items():
+        if k not in current_cfg:
+            if v["type"] == "int":
+                current_cfg[k] = int(rng.integers(v["min"], v["max"] + 1))
+            else:
+                current_cfg[k] = float(rng.uniform(v["min"], v["max"]))
+    if "lanes_count" in current_cfg and "initial_lane_id" in current_cfg:
+        current_cfg["initial_lane_id"] = int(np.clip(current_cfg["initial_lane_id"], 0, current_cfg["lanes_count"] - 1))
 
     # Evaluate initial solution (seed_base used for reproducibility)
     seed_base = int(rng.integers(1e9))
+    print(seed_base)
     crashed, ts = run_episode(env_id, current_cfg, policy, defaults, seed_base)
     obj = compute_objectives_from_time_series(ts)
     cur_fit = compute_fitness(obj)
@@ -235,23 +287,23 @@ def hill_climb(
     # crashes = 0
 
     for iteration in range(1, iterations):
+        print("Iteration 1")
         # generate neighbors 
-        mutated_cfg = best_cfg.copy()
-        for neighbor in range(0, neighbors_per_iter):
-            seed_base = int(rng.integers(1e9)) # ??? is this needed?
-            mutated_cfg = mutate_config(mutated_cfg, param_spec, rng)
+        seed_base = int(rng.integers(1e9)) # ??? is this needed?
+        for neighbor in range(1, neighbors_per_iter + 1):
+            print("Neighbor", neighbor)
+            mutated_cfg = mutate_config(best_cfg, param_spec, rng)
             # run the experiment
             crashed, ts = run_episode(env_id, mutated_cfg, policy, defaults, seed_base)
-            print("CRASHED", crashed)
+            # print("CRASHED", crashed)
             obj = compute_objectives_from_time_series(ts)
             # Crashed is not properly recorded in TS for some reason, we will overwrite the obj function to enforce this.
             if crashed:
-                cur_fit = -1
-            else:
-                cur_fit = compute_fitness(obj)
+                obj["crash_count"] = 1
+            cur_fit = compute_fitness(obj)
 
             # mutated fit is better than best_fit, we choose this.
-            if cur_fit <= best_fit:
+            if cur_fit < best_fit:
                 print(f"Better Found - New={cur_fit:.4f}, Old={best_fit:.4f}")
                 best_fit = cur_fit
                 best_obj = obj
@@ -265,7 +317,7 @@ def hill_climb(
                 break
         history.append(best_fit) # log the history of each iteration (consider logging only changes?)
         if best_fit == -1:
-        #     # Early stop if we found a crash:
+        # Early stop if we found a crash:
             break
     
     result = {

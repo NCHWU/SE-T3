@@ -11,7 +11,7 @@ def main():
 
     # search = RandomSearch(env_id, base_cfg, param_spec, policy, defaults)
     # crashes = search.run_search(n_scenarios=50, seed=11)
-    search = hill_climb(env_id, base_cfg, param_spec, policy, defaults)
+    search = hill_climb(env_id, base_cfg, param_spec, policy, defaults, seed=0)
     print(search)
 
     # print(f"✅ Found {len(crashes)} crashes.")
