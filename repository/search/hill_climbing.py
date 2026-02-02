@@ -287,11 +287,10 @@ def hill_climb(
     # crashes = 0
 
     for iteration in range(1, iterations):
-        print("Iteration 1")
         # generate neighbors 
         seed_base = int(rng.integers(1e9)) # ??? is this needed?
         for neighbor in range(1, neighbors_per_iter + 1):
-            print("Neighbor", neighbor)
+            print("Iteration", iteration, "Neighbor", neighbor)
             mutated_cfg = mutate_config(best_cfg, param_spec, rng)
             # run the experiment
             crashed, ts = run_episode(env_id, mutated_cfg, policy, defaults, seed_base)
